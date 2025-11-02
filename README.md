@@ -1,1 +1,1 @@
-puto how read
+puto who read
