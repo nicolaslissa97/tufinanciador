@@ -2,10 +2,15 @@ import { NextRequest, NextResponse } from "next/server"
 
 export async function POST(request: NextRequest) {
   try {
-    const { amount, riskProfile } = await request.json()
+    const { amount, riskProfile, country, timeframe } = await request.json()
 
-    if (!amount || !riskProfile) {
-      return NextResponse.json({ error: "Monto y perfil de riesgo son requeridos" }, { status: 400 })
+    console.log("amount", amount)
+    console.log("riskProfile", riskProfile)
+    console.log("country", country)
+    console.log("timeframe", timeframe)
+
+    if (!amount || !riskProfile || !country || !timeframe ) {
+      return NextResponse.json({ error: "Todos los campos son requeridos" }, { status: 400 })
     }
 
     // Mapear perfil a español para el prompt
@@ -15,12 +20,21 @@ export async function POST(request: NextRequest) {
       risky: "Riesgoso",
     }
 
+    const timeframeMap: Record<string, string> = {
+      short: "6 meses - 1 año",
+      medium: "1.5 años - 3 años",
+      long: "3 años o más",
+    }
+
     const riskProfileSpanish = riskProfileMap[riskProfile] || riskProfile
+    const timeframeSpanish = timeframeMap[timeframe] || timeframe
 
     // Construir el prompt según las especificaciones
     const systemPrompt = `Eres un Asesor Financiero con conocimientos avanzados en análisis técnico y en el uso de la teoría de las ondas de Elliott (Elliott Wave Theory).
 
-Tu tarea es realizar un análisis de activos financieros atractivos para un inversor con perfil ${riskProfileSpanish}, considerando:
+Tu tarea es realizar un análisis de activos financieros atractivos para un inversor con perfil ${riskProfileSpanish} 
+y su pais de residencia ${country} considerando que no puede comprar bonos de otros paises ni ETFS
+, considerando:
 
 1. Flujo de dinero de las empresas
 2. Riesgo país (análisis de riesgo macroeconómico, factores políticos, sociales, etc.)
@@ -38,7 +52,7 @@ IMPORTANTE:
 
 Estructura tu respuesta en formato JSON con el siguiente esquema:
 {
-  "lowRisk": {
+  "${riskProfile}": {
     "assets": [{
       "name": "Nombre del activo",
       "ticker": "Símbolo",
@@ -48,19 +62,12 @@ Estructura tu respuesta en formato JSON con el siguiente esquema:
       "entryPrice": "Precio de entrada",
       "exitPrice": "Precio de salida"
     }]
-  },
-  "moderateRisk": {
-    "assets": [{
-      "name": "Nombre del activo",
-      "ticker": "Símbolo",
-      "type": "Tipo de Activo",
-      "fundamentalAnalysis": "Análisis fundamental detallado",
-      "technicalAnalysis": "Análisis técnico con ondas de Elliott",
-      "entryPrice": "Precio de entrada",
-      "exitPrice": "Precio de salida"
-    }]
-  },
-  "highRisk": {
+  }
+}
+
+En caso de ser highRisk retornarlo de la siguiente manera:
+{
+ "highRisk": {
     "emergingMarkets": [{
       "name": "Nombre del activo",
       "ticker": "Símbolo",
@@ -85,8 +92,9 @@ Estructura tu respuesta en formato JSON con el siguiente esquema:
 Responde SOLO con el JSON, sin texto adicional.`
 
     const userPrompt = `El inversor tiene un perfil ${riskProfileSpanish} y un monto de inversión de $${amount.toLocaleString()}. 
-
-Genera recomendaciones de activos financieros apropiados para este perfil.`
+    El horizonte de inversión es de ${timeframeSpanish}
+    Genera recomendaciones de activos financieros apropiados para este perfil y horizonte de inversión,
+    no debemos incluir criptomonedas ni tampoco ETFs solo activos que sean operables en el pais del inversor ${country}`
 
     // ============================================
     // INTEGRACIÓN CON GOOGLE GEMINI
@@ -97,8 +105,11 @@ Genera recomendaciones de activos financieros apropiados para este perfil.`
       // Combinar system prompt y user prompt para Gemini
       const fullPrompt = `${systemPrompt}\n\n${userPrompt}`
       
+      console.log("[GEMINI] Calling Gemini 2.5 Flash API...")
+      console.log("[GEMINI] API Key:", geminiApiKey ? `${geminiApiKey.substring(0, 20)}...` : "NOT SET")
+      
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
         {
           method: 'POST',
           headers: {
@@ -112,7 +123,7 @@ Genera recomendaciones de activos financieros apropiados para este perfil.`
             }],
             generationConfig: {
               temperature: 0.7,
-              maxOutputTokens: 4000,
+              maxOutputTokens: 8192,
               responseMimeType: "application/json"
             }
           })
@@ -121,14 +132,19 @@ Genera recomendaciones de activos financieros apropiados para este perfil.`
 
       if (!response.ok) {
         const errorData = await response.text()
-        console.error("Gemini API error:", errorData)
-        console.error("Response status:", response.status)
-        console.error("Response statusText:", response.statusText)
+        console.error("[GEMINI] API error:", errorData)
+        console.error("[GEMINI] Response status:", response.status)
+        console.error("[GEMINI] Response statusText:", response.statusText)
         throw new Error(`Error en la API de Gemini: ${response.status} - ${errorData}`)
       }
 
       const data = await response.json()
+      console.log("[GEMINI] Success! Received response from Gemini")
       const content = data.candidates[0].content.parts[0].text
+      
+      console.log("[GEMINI] Raw content length:", content.length)
+      console.log("[GEMINI] First 500 chars:", content.substring(0, 500))
+      console.log("[GEMINI] Last 500 chars:", content.substring(Math.max(0, content.length - 500)))
       
       // Limpiar el contenido si tiene markdown code blocks
       let cleanContent = content.trim()
@@ -138,10 +154,40 @@ Genera recomendaciones de activos financieros apropiados para este perfil.`
         cleanContent = cleanContent.replace(/^```\n?/, '').replace(/\n?```$/, '')
       }
       
-      const parsedContent = JSON.parse(cleanContent)
-      return NextResponse.json(parsedContent)
+      // Intentar arreglar JSON truncado o mal formado
+      // Si el JSON está truncado, podemos intentar agregar la estructura faltante
+      try {
+        const parsedContent = JSON.parse(cleanContent)
+        console.log("[GEMINI] Successfully parsed JSON")
+        return NextResponse.json(parsedContent)
+      } catch (parseError) {
+        console.error("[GEMINI] JSON parsing error, attempting to fix...")
+        console.error("[GEMINI] Parse error:", parseError)
+        
+        // Intentar buscar el JSON válido más grande
+        let fixedContent = cleanContent
+        // Si termina con comillas o llaves no cerradas, intentar arreglarlo
+        if (!fixedContent.match(/}\s*$/)) {
+          // Buscar el último } válido
+          const lastBrace = fixedContent.lastIndexOf('}')
+          if (lastBrace > 0) {
+            fixedContent = fixedContent.substring(0, lastBrace + 1)
+            console.log("[GEMINI] Attempting to fix truncated JSON")
+          }
+        }
+        
+        try {
+          const parsedContent = JSON.parse(fixedContent)
+          console.log("[GEMINI] Successfully parsed fixed JSON")
+          return NextResponse.json(parsedContent)
+        } catch (secondError) {
+          console.error("[GEMINI] Could not parse JSON even after fix attempt")
+          throw new Error(`Failed to parse JSON response: ${secondError}`)
+        }
+      }
     } catch (apiError) {
-      console.error("Error calling Gemini API, falling back to mock data:", apiError)
+      console.error("[GEMINI] Error calling Gemini API, falling back to mock data:", apiError)
+      console.error("[GEMINI] Error details:", apiError instanceof Error ? apiError.message : "Unknown error")
       // Fallback a datos de ejemplo si hay error
       const mockResponse = {
         lowRisk: {

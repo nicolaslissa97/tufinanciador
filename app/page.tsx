@@ -11,12 +11,16 @@ type View = "form" | "recommendations" | "simulation"
 export default function Home() {
   const [currentView, setCurrentView] = useState<View>("form")
   const [investmentData, setInvestmentData] = useState<{
+    country: string
     amount: number
+    timeframe: "short" | "medium" | "long"
     riskProfile: "conservative" | "moderate" | "risky"
   } | null>(null)
 
   const handleGenerateRecommendations = (data: {
+    country: string
     amount: number
+    timeframe: "short" | "medium" | "long"
     riskProfile: "conservative" | "moderate" | "risky"
   }) => {
     setInvestmentData(data)

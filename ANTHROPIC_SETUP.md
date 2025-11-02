@@ -22,15 +22,15 @@ Ya está configurado como fallback en ambos archivos:
 
 ## Modelo Utilizado
 
-Se está usando **Gemini 1.5 Pro** (`gemini-1.5-pro`), que es uno de los modelos más avanzados de Google.
+Se está usando **Gemini 2.5 Flash** (`gemini-2.5-flash`), que es uno de los modelos más rápidos y eficientes de Google.
 
 ## Configuración
 
-- **Endpoint**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent`
+- **Endpoint**: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`
 - **Método**: POST
 - **Response MIME Type**: `application/json` (para garantizar respuestas en formato JSON)
 - **Temperature**: 0.7
-- **Max Output Tokens**: 4000
+- **Max Output Tokens**: 8192
 
 ## Fallback Automático
 
@@ -52,7 +52,7 @@ Si ves errores:
 1. **Error 401**: Verifica que la API Key sea correcta y que tengas habilitada la API de Gemini en Google Cloud Console
 2. **Error 429**: Has alcanzado el límite de rate. Espera unos minutos o verifica tu cuota en Google Cloud Console
 3. **Error de parsing JSON**: El formato de respuesta puede variar. Revisa los logs en la consola
-4. **Error 400**: Verifica que el modelo `gemini-1.5-pro` esté disponible en tu región/proyecto
+4. **Error 400**: Verifica que el modelo `gemini-2.5-flash` esté disponible en tu región/proyecto
 
 ## Obtener una API Key de Gemini
 

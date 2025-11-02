@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from "next/server"
 
 export async function POST(request: NextRequest) {
   try {
-    const { amount, riskProfile, selectedAssets } = await request.json()
+    const { amount, riskProfile, country, timeframe, selectedAssets } = await request.json()
 
-    if (!amount || !riskProfile) {
+    if (!amount || !riskProfile || !country || !timeframe ) {
       return NextResponse.json({ error: "Monto y perfil de riesgo son requeridos" }, { status: 400 })
     }
 
@@ -15,18 +15,25 @@ export async function POST(request: NextRequest) {
       risky: "riesgoso",
     }
 
+    const timeframeMap: Record<string, string> = {
+      short: "6 meses - 1 año",
+      medium: "1.5 años - 3 años",
+      long: "3 años o más",
+    }
+
     const riskProfileSpanish = riskProfileMap[riskProfile] || riskProfile
+    const timeframeSpanish = timeframeMap[timeframe] || timeframe
 
     // Construir el prompt según las especificaciones
     const systemPrompt = `Eres un Analista de Mercado con profundo conocimiento en fundamentales, valoración y estrategias de asignación de capital, y también eres un experto en análisis de ondas de Elliott (Elliott Wave).
 
 Tu tarea es:
-1. Seleccionar 5 activos de la bolsa de valores global (acciones, ETFs, o combinaciones de renta fija/variable) que sean óptimos para el horizonte de largo plazo (1-3 años) del inversor.
+1. Seleccionar 5 activos de la bolsa de valores global (acciones, ETFs, o combinaciones de renta fija/variable) que sean óptimos para el horizonte del inversor ${timeframeSpanish}.
 2. Diseñar una Estrategia de Inversión Óptima que incluya una propuesta de asignación de capital (porcentajes) para cada uno de los 5 activos seleccionados. Puedes combinar activos riesgosos, moderados y conservadores para cada perfil de inversor.
 3. Indicar según tu análisis de ondas de Elliott el precio de entrada estimado para cada activo.
 
 IMPORTANTE:
-- El horizonte de inversión es de 1-3 años (largo plazo)
+- El horizonte de inversión es de ${timeframeSpanish}
 - Debes seleccionar exactamente 5 activos
 - Los activos deben ser de la bolsa de valores global
 - NO incluyas criptomonedas
@@ -37,7 +44,7 @@ Estructura tu respuesta en formato JSON con el siguiente esquema:
 {
   "strategy": {
     "description": "Breve descripción de la estrategia",
-    "horizon": "1-3 años"
+    "horizon": "${timeframeSpanish}"
   },
   "assets": [
     {
@@ -58,7 +65,7 @@ Estructura tu respuesta en formato JSON con el siguiente esquema:
 Los porcentajes deben sumar 100% exactamente.
 Responde SOLO con el JSON, sin texto adicional.`
 
-    const userPrompt = `El inversor tiene un perfil ${riskProfileSpanish} y un monto total de inversión de $${amount.toLocaleString()}.
+    const userPrompt = `El inversor tiene un perfil ${riskProfileSpanish} y un monto total de inversión de $${amount.toLocaleString()} y su pais de residencia ${country} considera su pais para los activos que puede operar, no debemos incluir criptomonedas ni tampoco ETFs solo activos que sean operables en el pais del inversor.
 
 ${selectedAssets ? `El usuario ha mostrado interés en estos activos: ${JSON.stringify(selectedAssets)}. Puedes usarlos como referencia pero no estás limitado a ellos.` : ''}
 
@@ -73,8 +80,11 @@ Genera una estrategia de inversión óptima con 5 activos y sus asignaciones de 
       // Combinar system prompt y user prompt para Gemini
       const fullPrompt = `${systemPrompt}\n\n${userPrompt}`
       
+      console.log("[GEMINI] Calling Gemini 2.5 Flash API...")
+      console.log("[GEMINI] API Key:", geminiApiKey ? `${geminiApiKey.substring(0, 20)}...` : "NOT SET")
+      
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
         {
           method: 'POST',
           headers: {
@@ -88,7 +98,7 @@ Genera una estrategia de inversión óptima con 5 activos y sus asignaciones de 
             }],
             generationConfig: {
               temperature: 0.7,
-              maxOutputTokens: 4000,
+              maxOutputTokens: 8192,
               responseMimeType: "application/json"
             }
           })
@@ -97,14 +107,19 @@ Genera una estrategia de inversión óptima con 5 activos y sus asignaciones de 
 
       if (!response.ok) {
         const errorData = await response.text()
-        console.error("Gemini API error:", errorData)
-        console.error("Response status:", response.status)
-        console.error("Response statusText:", response.statusText)
+        console.error("[GEMINI] API error:", errorData)
+        console.error("[GEMINI] Response status:", response.status)
+        console.error("[GEMINI] Response statusText:", response.statusText)
         throw new Error(`Error en la API de Gemini: ${response.status} - ${errorData}`)
       }
 
       const data = await response.json()
+      console.log("[GEMINI] Success! Received response from Gemini")
       const content = data.candidates[0].content.parts[0].text
+      
+      console.log("[GEMINI] Raw content length:", content.length)
+      console.log("[GEMINI] First 500 chars:", content.substring(0, 500))
+      console.log("[GEMINI] Last 500 chars:", content.substring(Math.max(0, content.length - 500)))
       
       // Limpiar el contenido si tiene markdown code blocks
       let cleanContent = content.trim()
@@ -114,10 +129,40 @@ Genera una estrategia de inversión óptima con 5 activos y sus asignaciones de 
         cleanContent = cleanContent.replace(/^```\n?/, '').replace(/\n?```$/, '')
       }
       
-      const parsedContent = JSON.parse(cleanContent)
-      return NextResponse.json(parsedContent)
+      // Intentar arreglar JSON truncado o mal formado
+      // Si el JSON está truncado, podemos intentar agregar la estructura faltante
+      try {
+        const parsedContent = JSON.parse(cleanContent)
+        console.log("[GEMINI] Successfully parsed JSON")
+        return NextResponse.json(parsedContent)
+      } catch (parseError) {
+        console.error("[GEMINI] JSON parsing error, attempting to fix...")
+        console.error("[GEMINI] Parse error:", parseError)
+        
+        // Intentar buscar el JSON válido más grande
+        let fixedContent = cleanContent
+        // Si termina con comillas o llaves no cerradas, intentar arreglarlo
+        if (!fixedContent.match(/}\s*$/)) {
+          // Buscar el último } válido
+          const lastBrace = fixedContent.lastIndexOf('}')
+          if (lastBrace > 0) {
+            fixedContent = fixedContent.substring(0, lastBrace + 1)
+            console.log("[GEMINI] Attempting to fix truncated JSON")
+          }
+        }
+        
+        try {
+          const parsedContent = JSON.parse(fixedContent)
+          console.log("[GEMINI] Successfully parsed fixed JSON")
+          return NextResponse.json(parsedContent)
+        } catch (secondError) {
+          console.error("[GEMINI] Could not parse JSON even after fix attempt")
+          throw new Error(`Failed to parse JSON response: ${secondError}`)
+        }
+      }
     } catch (apiError) {
-      console.error("Error calling Gemini API, falling back to mock data:", apiError)
+      console.error("[GEMINI] Error calling Gemini API, falling back to mock data:", apiError)
+      console.error("[GEMINI] Error details:", apiError instanceof Error ? apiError.message : "Unknown error")
       // Fallback a datos de ejemplo si hay error
       
     const calculateAllocation = () => {
